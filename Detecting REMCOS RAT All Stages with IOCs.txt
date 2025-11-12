@@ -1,0 +1,97 @@
+// Remcos RAT — compact, high-precision hunting (no stages)
+let timeframe = ago(7d);
+let minIndicatorsRequired = 2;
+// IOCs
+let c2_domains = dynamic(["icebergtbilisi.ge","ablelifepurelife.ydns.eu","ablelifepurelifebk.ydns.eu"]);
+let c2_ips = dynamic(["89.238.176.5"]);
+let attachment_names = dynamic(["EFEMMAK TURKEY INQUIRY ORDER NR 09162025.gz"]);
+let attachment_sha256 = dynamic(["5eb460204cd0f5510b146b8465b4392e9d0795b5d7fdb51b1c1429f97593a4b3"]);
+let batch_names = dynamic(["EFEMMAK TURKEY INQUIRY ORDER NR 09162025.bat"]);
+let script_sha256 = dynamic(["5cb34177d0289e9737e5a261b8d1aac227656b96c768f789d6fcc9bc20adb05e","3ec5b13ee66d84dd75ac619ebb79c64cef7986dd6e8049f689f9ac39c272fea2"]);
+let suspicious_strings = dynamic(["lotusblo","garrots","sluknin.afm","hereni.gen"]);
+// 1) Batch file execution from Temp, with EFEMMAK naming
+let BatchTemp =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| extend cl = tolower(tostring(ProcessCommandLine)), fn = tolower(tostring(FileName)), fp = tolower(tostring(FolderPath))
+| where (cl has "appdata\\local\\temp" or fp has "appdata\\local\\temp")
+| where fn endswith ".bat" or cl has ".bat"
+| where cl has_any (tolower(batch_names)) or cl has "efemmak turkey inquiry order nr"
+| extend Indicator = strcat("batch_temp:", coalesce(FileName, "<unknown>")),
+         Source = "Process:BatchTemp",
+         IsStrongIOC = false
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// 2) PowerShell with unique Remcos strings / artifacts
+let PsRemcos =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where FileName =~ "powershell.exe"
+| extend cl = tolower(tostring(ProcessCommandLine))
+| where cl has_any (suspicious_strings)
+// keep this precise: only the unique strings you provided
+| extend Indicator = strcat("powershell_remcos:", substring(cl, 0, 160)),
+         Source = "Process:PowerShell",
+         IsStrongIOC = false
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// 3) rmclient.exe executing from Temp
+let RmclientTemp =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| extend fn = tolower(tostring(FileName)), cl = tolower(tostring(ProcessCommandLine)), fp = tolower(tostring(FolderPath))
+| where fn has "rmclient.exe"
+| where cl has "appdata\\local\\temp" or fp has "appdata\\local\\temp"
+| extend Indicator = strcat("rmclient_from_temp:", coalesce(ProcessCommandLine, FileName)),
+         Source = "Process:RmclientTemp",
+         IsStrongIOC = true // strong post-injection artifact for this case
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// 4) msiexec network to known C2 (or fetching Sluknin.afm)
+let MsiexecC2Net =
+DeviceNetworkEvents
+| where Timestamp >= timeframe
+| where tolower(tostring(InitiatingProcessFileName)) has "msiexec"
+| extend ru = tolower(tostring(RemoteUrl))
+| where ru has_any (c2_domains) or RemoteIP in (c2_ips) or ru has "sluknin.afm"
+| extend Indicator = strcat("msiexec_c2:", coalesce(RemoteUrl, tostring(RemoteIP))),
+         Source = "Network:Msiexec",
+         IsStrongIOC = iif(ru has_any (c2_domains) or RemoteIP in (c2_ips), true, false)
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// 5) msiexec started by powershell (precursor)
+let MsiexecByPS =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where FileName =~ "msiexec.exe" and InitiatingProcessFileName =~ "powershell.exe"
+| extend Indicator = "msiexec_launched_by_powershell",
+         Source = "Process:MsiexecByPS",
+         IsStrongIOC = false
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// 6) File hashes (attachment/scripts) observed on endpoints
+let FileHashMatches =
+DeviceFileEvents
+| where Timestamp >= timeframe
+| where SHA256 in (attachment_sha256) or SHA256 in (script_sha256)
+| extend Indicator = strcat("file_hash:", SHA256),
+         Source = "File:Hash",
+         IsStrongIOC = true
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// (Optional) attachment name seen on endpoints (if saved/extracted) — avoids Email tables (which may lack DeviceId)
+let FileNameMatches =
+DeviceFileEvents
+| where Timestamp >= timeframe
+| where tolower(FileName) in~ (tolower(attachment_names)) or tolower(FileName) in~ (tolower(batch_names))
+| extend Indicator = strcat("filename_match:", FileName),
+         Source = "File:Name",
+         IsStrongIOC = true
+| project Timestamp, DeviceId, DeviceName, Indicator, Source, IsStrongIOC;
+// Union indicators → per-device rollup → keep devices with >=2 indicators OR any strong IOC
+union BatchTemp, PsRemcos, RmclientTemp, MsiexecC2Net, MsiexecByPS, FileHashMatches, FileNameMatches
+| where isnotempty(DeviceId)
+| summarize
+    FirstSeen = min(Timestamp),
+    LastSeen  = max(Timestamp),
+    Indicators = make_set(Indicator, 100),
+    Sources    = make_set(Source, 50),
+    IndicatorCount = dcount(Indicator),
+    HasStrongIOC = max(toint(IsStrongIOC))
+  by DeviceId, DeviceName
+| where IndicatorCount >= minIndicatorsRequired or HasStrongIOC == 1
+| sort by LastSeen desc
