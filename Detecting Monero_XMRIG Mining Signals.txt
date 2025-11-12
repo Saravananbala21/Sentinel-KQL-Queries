@@ -1,0 +1,85 @@
+# 🕵️‍♂️ Suspicious Configuration Edits and Persistence (Linux)
+
+**Author:** Saravanan Balachandran  
+**Created:** 2025-11-12  
+**Data Source:** `DeviceProcessEvents`  
+**Platform:** Linux  
+
+---
+
+## 🧩 MITRE ATT&CK Mapping
+
+| Technique ID | Technique Name | Tactic |
+|---------------|----------------|--------|
+| T1059 | Command and Scripting Interpreter | Execution |
+| T1053.003 | Scheduled Task/Job: Cron | Persistence |
+| T1547.001 | Boot or Logon Autostart Execution | Persistence |
+| T1562.001 | Impair Defenses | Defense Evasion |
+
+---
+
+## 📝 Description
+This query detects **suspicious configuration changes and persistence mechanisms** on Linux systems that may indicate **crypto-mining or attacker persistence activity**.  
+It looks for:
+1. **Configuration edits** — use of `sed -i` to modify `config.json` and change `rig-id`.  
+2. **Crontab persistence** — use of `crontab @reboot` entries to execute payloads automatically.  
+3. **Payload executions** — commands that reference `download/system` and `config.json`.
+
+The query raises an alert when **two or more distinct suspicious behaviors** occur on the same device within a 30-day period.
+
+---
+
+## ⚙️ Query Logic Summary
+- Converts all command lines to lowercase for consistent matching.  
+- Searches for suspicious patterns in process command lines.  
+- Projects key information (`DeviceId`, `DeviceName`, timestamps).  
+- Merges results and filters for devices showing multiple correlated signals.
+
+---
+
+## 🚨 Detection Purpose
+To identify Linux hosts possibly compromised by **malware or crypto-mining operations**, which alter configuration files and establish persistence through cron jobs.
+
+---
+
+## 🧾 Recommended Actions
+- Investigate affected devices for unauthorized configuration changes.  
+- Check `/etc/crontab` and user crontabs for `@reboot` entries.  
+- Review network logs for suspicious downloads or miner connections.  
+- Isolate and remediate compromised devices.
+
+---
+
+## 📜 KQL Query
+```kql
+let lookback = 24h;
+// 1. Config edits
+let cfg = DeviceProcessEvents
+| where Timestamp > ago(30d)
+| extend lc = tolower(ProcessCommandLine)
+| where lc contains "sed -i" and lc contains "rig-id" and lc contains "config.json"
+| project DeviceId, DeviceName, cfgTime = Timestamp;
+// 2. Crontab persistence
+let cron = DeviceProcessEvents
+| where Timestamp > ago(30d)
+| extend lc = tolower(ProcessCommandLine)
+| where lc contains "crontab" and lc contains "@reboot"
+| project DeviceId, DeviceName, cronTime = Timestamp;
+// 3. Payload run
+let run = DeviceProcessEvents
+| where Timestamp > ago(30d)
+| extend lc = tolower(ProcessCommandLine)
+| where lc contains "download/system" and lc contains "config.json"
+| project DeviceId, DeviceName, runTime = Timestamp;
+// 4. Combine and require ≥2 distinct signals
+union
+  (cfg | extend sig="cfg"),
+  (cron | extend sig="cron"),
+  (run | extend sig="run")
+| summarize Signals = make_set(sig),
+            SignalCount = dcount(sig),
+            FirstSeen = min(coalesce(cfgTime, cronTime, runTime))
+  by DeviceId, DeviceName
+| where SignalCount >= 2
+| project FirstSeen, DeviceName, SignalCount, Signals
+| order by FirstSeen asc
