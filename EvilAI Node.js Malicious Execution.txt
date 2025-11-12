@@ -1,0 +1,79 @@
+# 🧨 Suspicious Node.js Execution from Temporary or Public Directories
+
+**Author:** Saravanan Balachandran  
+**Created:** 2025-11-12  
+**Platform:** Windows  
+**Data Source:** `DeviceProcessEvents`  
+**Purpose:** Detect potential malicious Node.js executions from temporary or public directories (e.g., `%Temp%`, `%Public%`, `%AppData%`) using GUID-like filenames — common in script-based malware loaders.
+
+---
+
+## 🧩 MITRE ATT&CK Mapping
+
+| Technique ID | Technique Name | Tactic |
+|---------------|----------------|--------|
+| T1059 | Command and Scripting Interpreter | Execution |
+| T1059.007 | JavaScript | Execution |
+| T1204 | User Execution | Initial Access |
+| T1218 | Signed Binary Proxy Execution | Defense Evasion |
+| T1105 | Ingress Tool Transfer | Command & Control |
+
+> *Notes:* Attackers often drop Node.js payloads with random GUID filenames into temporary folders and launch them via PowerShell or cmd as part of staged infections.
+
+---
+
+## 📝 Description
+This query detects executions of **`node.exe`** launched by **`cmd.exe`** or **`powershell.exe`**, where the command line indicates a file path in suspicious directories such as:
+- `C:\ProgramData`
+- `C:\Windows\Temp`
+- `C:\Users\Public`
+- `C:\PerfLogs`
+- or within a user’s `AppData\Local` / `AppData\Roaming` folders.
+
+The query uses a **regex pattern** to match files named with a **GUID** (e.g., `a12b3c4d-5678-90ab-cdef-1234567890ab.js` or `.exe`), which is typical of malware droppers or obfuscated payloads.
+
+---
+
+## ⚙️ Detection Settings (defaults)
+- **Timeframe:** last 30 days  
+- **Initiating process filter:** `cmd.exe`, `powershell.exe`  
+- **Target process:** `node.exe`  
+- **Suspicious path regex:** matches random GUID-style filenames from known drop locations  
+
+---
+
+## 🔎 Investigation Tips
+- Review the `ProcessCommandLine` for suspicious Node.js script parameters or download URLs.  
+- Check if `node.exe` is legitimately installed on the system (e.g., developer toolchain).  
+- Inspect the corresponding folder path for additional dropped or renamed payloads.  
+- Correlate with network telemetry for potential command & control or data exfiltration.
+
+---
+
+## 🚨 Response Guidance
+- Isolate the host to prevent lateral movement.  
+- Collect and analyze the suspicious `.js` or `.exe` files.  
+- Search for the same GUID-named files across your environment.  
+- Review user activity to determine if the execution was intentional or malicious.
+
+---
+
+## ⚠️ Known False Positives
+- Developer systems using Node.js for legitimate scripts (rare if launched from `Temp`/`Public`).  
+- Automation tools or update installers that temporarily use Node-based executables.
+
+---
+
+## 🏷️ Tags
+`nodejs`, `powershell`, `cmd`, `execution`, `defense-evasion`, `windows`, `guid`, `kql`, `sentinel`
+
+---
+
+## 📜 KQL Query
+DeviceProcessEvents
+| where Timestamp > ago(30d)
+| where InitiatingProcessFileName in~ ("cmd.exe", "powershell.exe")
+| where FileName == "node.exe"
+| where ProcessCommandLine matches regex @"(C:\\ProgramData|C:\\Windows\\Temp|C:\\Users\\Public|C:\\PerfLogs|C:\\Users\\[^\\]+\\AppData\\(Local|Roaming)(\\Temp)?)[\\\/][0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(js|exe)"
+| project Timestamp, DeviceName, AccountName, InitiatingProcessFileName, FileName, ProcessCommandLine, FolderPath, InitiatingProcessCommandLine
+| sort by Timestamp desc
