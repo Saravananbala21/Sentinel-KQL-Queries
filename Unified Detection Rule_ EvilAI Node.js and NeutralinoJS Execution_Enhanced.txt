@@ -1,0 +1,56 @@
+// Title: EvilAI Node.js & NeutralinoJS Malicious Execution Detection
+// Description: Detects suspicious Node.js or NeutralinoJS executions linked to EvilAI malware activity, including GUID-based payloads, MachineGuid registry access, or non-standard directory launches.
+// Author: Saravanan Balachandran 
+// MITRE ATT&CK: T1059.007 (JavaScript), T1082 (System Information Discovery), T1055 (Process Injection)
+
+let suspicious_folders = dynamic([
+    "\\AppData\\Local\\Programs\\ManualReaderPro\\",
+    "C:\\ProgramData\\",
+    "C:\\Windows\\Temp\\",
+    "C:\\Users\\Public\\",
+    "C:\\PerfLogs\\",
+    "\\AppData\\Local\\Temp\\",
+    "\\AppData\\Roaming\\Temp\\"
+]);
+DeviceProcessEvents
+| where Timestamp > ago(3d)
+| where (
+    (FileName in~ ("node.exe", "neutralino.exe", "n0de.exe")) or
+    (InitiatingProcessFileName in~ ("cmd.exe", "powershell.exe"))
+)
+| extend FolderLower = tolower(FolderPath)
+| where FolderLower has_any (suspicious_folders)
+| extend cmdline_lower = tolower(ProcessCommandLine)
+| where
+    // Detect registry fingerprinting behavior
+    cmdline_lower has_any ("reg.exe query", "hklm\\software\\microsoft\\cryptography", "machineguid")
+    or
+    // Detect NeutralinoJS launch
+    cmdline_lower has "--load-dir-res"
+    or
+    // Detect GUID-based JS execution
+    cmdline_lower matches regex @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(js|exe)"
+| project
+    Timestamp,
+    DeviceName,
+    DeviceId,
+    AccountName,
+    FileName,
+    FolderPath,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    InitiatingProcessFolderPath,
+    ReportId
+| summarize
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp),
+    Count = count(),
+    CommandLines = makeset(ProcessCommandLine),
+    ParentProcesses = makeset(InitiatingProcessFileName),
+    SuspiciousPaths = makeset(FolderPath)
+    by DeviceId, DeviceName, AccountName
+| extend
+    timestamp = FirstSeen,
+    HostCustomEntity = DeviceName,
+    AccountCustomEntity = AccountName

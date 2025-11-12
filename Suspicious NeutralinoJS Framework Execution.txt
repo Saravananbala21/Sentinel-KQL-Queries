@@ -1,0 +1,82 @@
+# 📦 Neutralino / Node Execution with `--load-dir-res` Outside Standard Paths
+
+**Author:** Saravanan Balachandran  
+**Created:** 2025-11-12  
+**Platform:** Windows  
+**Data Source:** `DeviceProcessEvents`  
+**Purpose:** Detect executions of **neutralino.exe** or **node.exe** with the `--load-dir-res` flag **outside** trusted install paths (e.g., `C:\Program Files\*`). This often indicates **portable app staging**, **living-off-the-land packaging**, or **malware loaders** abusing JS runtimes.
+
+---
+
+## 🧩 MITRE ATT&CK Mapping
+
+| Technique ID | Technique Name | Tactic |
+|---|---|---|
+| T1059.007 | Command & Scripting Interpreter: JavaScript | Execution |
+| T1204 | User Execution | Initial Access |
+| T1036 | Masquerading *(contextual, if renamed/placed oddly)* | Defense Evasion |
+
+> *Notes:* Portable Neutralino/Node builds running from user-writable paths are common in loader chains and “bring-your-own-runtime” attacks.
+
+---
+
+## 📝 Description
+Flags **`neutralino.exe`** or **`node.exe`** processes that include `--load-dir-res` in their command line but run **outside** `C:\Program Files\` or `C:\Program Files (x86)\`.  
+Results are summarized per device in **30-minute bins**, showing first/last seen, unique command lines, parent processes, and one example execution path.
+
+---
+
+## ⚙️ Detection Settings (defaults)
+- **Timeframe:** last 30 days  
+- **Target binaries:** `neutralino.exe`, `node.exe`  
+- **Flag required:** `--load-dir-res`  
+- **Trusted install paths:** `C:\Program Files\`, `C:\Program Files (x86)\`  
+- **Aggregation:** 30-minute bins per device
+
+---
+
+## 🔎 Investigation Tips
+- Inspect `CommandLines` for embedded resource dirs, script entry points, or remote content.  
+- Check `ExecutionPath` and file signer/publisher (portable builds are often unsigned).  
+- Review parents in `ParentProcesses` (e.g., browsers, installers, PowerShell).  
+- Hunt siblings in the same folder (DLLs, JS bundles, MSI/ZIP artifacts).
+
+---
+
+## 🚨 Response Guidance
+- If unapproved software: quarantine, collect the executable, and block hash/path.  
+- If suspicious chain (download → unzip → run): search recent downloads and quarantine staging dirs.  
+- Add **allow-list** rules for known-good developer or enterprise tools to reduce noise.
+
+---
+
+## ⚠️ Known False Positives
+- Legitimate developer usage or portable Neutralino/Node apps in user profiles.  
+- Enterprise tools that package Neutralino/Node and run from custom paths (IT-sanctioned).
+
+---
+
+## 🏷️ Tags
+`neutralino`, `nodejs`, `portable-app`, `execution`, `windows`, `kql`, `sentinel`, `masquerading`
+
+---
+
+## 📜 KQL Query
+```kql
+let standard_install_paths = dynamic(["C:\\Program Files\\", "C:\\Program Files (x86)\\"]);
+DeviceProcessEvents
+| where Timestamp > ago(30d)
+| where FileName in~ ("neutralino.exe", "node.exe")
+| where ProcessCommandLine has "--load-dir-res"
+| where not(FolderPath has_any (standard_install_paths))
+| summarize
+    StartTime = min(Timestamp),
+    EndTime = max(Timestamp),
+    CommandLines = makeset(ProcessCommandLine),
+    ParentProcesses = makeset(InitiatingProcessFileName),
+    ExecutionPath = take_any(FolderPath)
+    by DeviceId, DeviceName, AccountName, bin(Timestamp, 30m)
+| extend
+    timestamp = StartTime,
+    HostCustomEntity = DeviceName,
+    AccountCustomEntity = AccountName
