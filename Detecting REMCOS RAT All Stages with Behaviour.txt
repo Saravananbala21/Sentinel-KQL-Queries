@@ -1,0 +1,125 @@
+# 🪲 Remcos — Exact Behavior Correlation (15-minute window)
+
+**Author:** Saravanan Balachandran  
+**Created:** 2025-11-12  
+**Platform:** Windows  
+**Data Source:** `DeviceProcessEvents`  
+**Purpose:** Detect a high-confidence Remcos infection chain by correlating exact behaviors (batch from Temp, hidden PowerShell with specific functions, `msiexec` spawned by PowerShell, and `rmclient.exe` from Temp/Roaming) within a short time window on the same device.
+
+---
+
+## 🧩 MITRE ATT&CK Mapping
+
+| Technique ID | Technique Name | Tactic |
+|---|---|---|
+| T1059.001 | PowerShell | Execution |
+| T1059.003 | Windows Command Shell (batch) | Execution |
+| T1218.007 | Signed Binary Proxy Execution: `msiexec` | Defense Evasion / Execution |
+| T1564.003 | Hide Artifacts: Hidden Window | Defense Evasion |
+| T1105 *(contextual)* | Ingress Tool Transfer (downloaded payloads) | Command & Control |
+
+> *Notes:* `msiexec` spawned by PowerShell is a classic LOLBin pattern (T1218.007). Hidden PowerShell (`-WindowStyle Hidden`) aligns with T1564.003. Batch execution from Temp and staging in `%AppData%`/`%Temp%` are common with Remcos and similar loaders.
+
+---
+
+## 📝 Description
+The query looks for four precise behaviors over the last 30 days and raises an alert when **≥2 different behaviors** occur on the same device within **15 minutes**:
+
+1) **Batch from Temp** — a specific `.bat` name executed from `%LocalAppData%\Temp`.  
+2) **Hidden PowerShell with function markers** — `-WindowStyle Hidden` plus suspicious markers (`Lotusblo`, `Garrots`) using `Invoke-Expression/iex`.  
+3) **`msiexec.exe` launched by PowerShell** — potential LOLBin install/run behavior.  
+4) **`rmclient.exe` from Temp/Roaming** — associated with Remcos staging paths.
+
+This correlation reduces false positives and highlights genuine multi-step infections.
+
+---
+
+##⚙️ Detection Settings (defaults)
+- **Timeframe:** last 30 days  
+- **Correlation window:** 15 minutes  
+- **Minimum distinct behaviors:** 2  
+- **Max examples shown per device:** 10
+
+---
+
+## 🔎 Investigation Tips
+- Review `Examples.Cmd` entries for download URLs, encoded payloads, or MSI sources.  
+- Check user’s `%AppData%\Local\Temp` and `%AppData%\Roaming` for dropped binaries and persistence artifacts.  
+- Examine associated network connections around `FirstSeen`–`LastSeen` for C2 or staging endpoints.
+
+---
+
+## 🚨 Response Guidance
+- Quarantine or isolate the device.  
+- Remove scheduled tasks, autoruns, and dropped files.  
+- Rotate credentials used on the host.  
+- Block observed indicators (hashes/domains/URLs) across the fleet.
+
+---
+
+## ⚠️ Known False Positives
+- Admin or IT scripts that legitimately use `msiexec` via PowerShell (rare when combined with hidden window + `iex`).  
+- Rename-only collisions on the batch filename (verify the path and content).
+
+---
+
+## 🏷️ Tags
+`remcos`, `rat`, `lolbins`, `msiexec`, `powershell`, `defense-evasion`, `execution`, `windows`, `kql`, `sentinel`
+
+
+## KQL QUERY
+
+// Remcos — exact behavior detection with 15-minute time correlation
+let timeframe = ago(30d);
+let windowMinutes = 15;
+// Collect each exact behavior separately
+let BatchFromTemp =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where FileName endswith ".bat"
+| where (ProcessCommandLine contains "EFEMMAK TURKEY INQUIRY ORDER NR 09162025.bat"
+     or FileName contains "EFEMMAK TURKEY INQUIRY ORDER NR 09162025.bat")
+| where ProcessCommandLine contains "AppData\\Local\\Temp" or FolderPath contains "AppData\\Local\\Temp"
+| extend Behavior = "EFEMMAK batch executed from Temp"
+| project Timestamp, DeviceId, DeviceName, Behavior, FileName, ProcessCommandLine, InitiatingProcessFileName;
+let PsWithFunctions =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where FileName =~ "powershell.exe" or FileName =~ "pwsh.exe"
+| where ProcessCommandLine contains "-windowstyle hidden"
+| where (ProcessCommandLine contains "Lotusblo" or ProcessCommandLine contains "Garrots")
+| where (ProcessCommandLine contains "Invoke-Expression" or ProcessCommandLine contains "iex")
+| extend Behavior = "Hidden PowerShell with Lotusblo/Garrots & Invoke-Expression"
+| project Timestamp, DeviceId, DeviceName, Behavior, FileName, ProcessCommandLine, InitiatingProcessFileName;
+let MsiexecByPs =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where FileName =~ "msiexec.exe"
+| where InitiatingProcessFileName =~ "powershell.exe" or InitiatingProcessFileName =~ "pwsh.exe"
+| extend Behavior = "msiexec launched by PowerShell"
+| project Timestamp, DeviceId, DeviceName, Behavior, FileName, ProcessCommandLine, InitiatingProcessFileName;
+let RmclientFromTemp =
+DeviceProcessEvents
+| where Timestamp >= timeframe
+| where tolower(FileName) contains "rmclient.exe"
+| where ProcessCommandLine contains "AppData\\Local\\Temp"
+    or FolderPath contains "AppData\\Local\\Temp"
+    or ProcessCommandLine contains "AppData\\Roaming"
+| extend Behavior = "rmclient.exe executed from Temp/Roaming"
+| project Timestamp, DeviceId, DeviceName, Behavior, FileName, ProcessCommandLine, InitiatingProcessFileName;
+// Union all behaviors
+let allBehaviors = union BatchFromTemp, PsWithFunctions, MsiexecByPs, RmclientFromTemp;
+// Find pairs of different behaviors on the same device within 15 minutes
+allBehaviors
+| join kind=inner (allBehaviors) on DeviceId
+| where Behavior != Behavior1
+| where abs(datetime_diff('minute', Timestamp, Timestamp1)) <= windowMinutes
+| summarize
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp),
+    Behaviors = make_set(Behavior, 10),
+    Examples = make_list(pack("Time", Timestamp, "Behavior", Behavior, "Cmd", ProcessCommandLine), 10)
+  by DeviceId, DeviceName
+| where array_length(Behaviors) >= 2
+| project DeviceName, DeviceId, FirstSeen, LastSeen, BehaviorCount=array_length(Behaviors), Behaviors, Examples
+| sort by LastSeen desc
