@@ -1,0 +1,84 @@
+let lookbackDays = 30d;
+let cfg =
+DeviceProcessEvents
+| where Timestamp > ago(lookbackDays)
+| extend lc = tostring(ProcessCommandLine),
+         lf = tostring(column_ifexists("FolderPath","")),
+         fn = tostring(column_ifexists("FileName","")),
+         iproc = tostring(column_ifexists("InitiatingProcessFileName","")),
+         iprocCmd = tostring(column_ifexists("InitiatingProcessCommandLine","")),
+         acct = tostring(column_ifexists("AccountName","")),
+         sha256 = tostring(column_ifexists("SHA256","")),
+         rIP = tostring(column_ifexists("RemoteIP","")),
+         rUrl = tostring(column_ifexists("RemoteUrl","")),
+         act = tostring(column_ifexists("ActionType",""))
+| where tolower(lc) contains "sed -i" and tolower(lc) contains "rig-id" and tolower(lc) contains "config.json"
+| project DeviceId, DeviceName, SignalTime = Timestamp, Signal="cfg", lc, fn, lf, iproc, iprocCmd, acct, sha256, rIP, rUrl, act;
+let cron =
+DeviceProcessEvents
+| where Timestamp > ago(lookbackDays)
+| extend lc = tostring(ProcessCommandLine),
+         lf = tostring(column_ifexists("FolderPath","")),
+         fn = tostring(column_ifexists("FileName","")),
+         iproc = tostring(column_ifexists("InitiatingProcessFileName","")),
+         iprocCmd = tostring(column_ifexists("InitiatingProcessCommandLine","")),
+         acct = tostring(column_ifexists("AccountName","")),
+         sha256 = tostring(column_ifexists("SHA256","")),
+         rIP = tostring(column_ifexists("RemoteIP","")),
+         rUrl = tostring(column_ifexists("RemoteUrl","")),
+         act = tostring(column_ifexists("ActionType",""))
+| where tolower(lc) contains "crontab" and tolower(lc) contains "@reboot"
+| project DeviceId, DeviceName, SignalTime = Timestamp, Signal="cron", lc, fn, lf, iproc, iprocCmd, acct, sha256, rIP, rUrl, act;
+let run =
+DeviceProcessEvents
+| where Timestamp > ago(lookbackDays)
+| extend lc = tostring(ProcessCommandLine),
+         lf = tostring(column_ifexists("FolderPath","")),
+         fn = tostring(column_ifexists("FileName","")),
+         iproc = tostring(column_ifexists("InitiatingProcessFileName","")),
+         iprocCmd = tostring(column_ifexists("InitiatingProcessCommandLine","")),
+         acct = tostring(column_ifexists("AccountName","")),
+         sha256 = tostring(column_ifexists("SHA256","")),
+         rIP = tostring(column_ifexists("RemoteIP","")),
+         rUrl = tostring(column_ifexists("RemoteUrl","")),
+         act = tostring(column_ifexists("ActionType",""))
+| where tolower(lc) contains "download/system" and tolower(lc) contains "config.json"
+| project DeviceId, DeviceName, SignalTime = Timestamp, Signal="run", lc, fn, lf, iproc, iprocCmd, acct, sha256, rIP, rUrl, act;
+union cfg, cron, run
+| summarize
+    Signals                 = make_set(Signal),
+    SignalCount             = dcount(Signal),
+    FirstSeen               = min(SignalTime),
+    LastSeen                = max(SignalTime),
+    SampleCmds              = make_set(lc, 5),
+    SampleFileNames         = make_set(fn, 5),
+    SampleFolderPaths       = make_set(lf, 5),
+    SampleInitiatingProcs   = make_set(iproc, 5),
+    SampleInitiatingCmds    = make_set(iprocCmd, 5),
+    SampleAccounts          = make_set(acct, 5),
+    SampleSHA256            = make_set(sha256, 5),
+    SampleRemoteIPs         = make_set(rIP, 5),
+    SampleRemoteUrls        = make_set(rUrl, 5),
+    SampleActionTypes       = make_set(act, 5),
+    EventCount              = count()
+  by DeviceId, DeviceName
+| where SignalCount >= 2
+| project
+    FirstSeen,
+    LastSeen,
+    DeviceName,
+    DeviceId,
+    SignalCount,
+    Signals,
+    EventCount,
+    SampleCmds,
+    SampleFileNames,
+    SampleFolderPaths,
+    SampleInitiatingProcs,
+    SampleInitiatingCmds,
+    SampleAccounts,
+    SampleSHA256,
+    SampleRemoteIPs,
+    SampleRemoteUrls,
+    SampleActionTypes
+| order by FirstSeen asc
