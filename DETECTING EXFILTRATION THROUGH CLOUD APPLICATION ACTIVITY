@@ -1,0 +1,14 @@
+// DETECTING EXFILTRATION THROUGH CLOUD APPLICATION ACTIVITY 
+CloudAppEvents
+| where Timestamp > ago(90d)
+| where ActionType in~ ("UploadFile", "ShareFileExternally", "CreateLink", "DownloadFile")
+| where Application in~ ("Dropbox", "Google Drive", "Box", "Mega", "WeTransfer", "Egnyte", "Syncplicity", "Zoho WorkDrive")
+| project
+    Timestamp,
+    AccountDisplayName,
+    Application,
+    ActionType,
+    IPAddress,
+    City,
+    CountryCode
+| order by Timestamp desc
