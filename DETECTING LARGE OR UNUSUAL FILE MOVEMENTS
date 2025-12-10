@@ -1,0 +1,64 @@
+// DETECTING LARGE OR UNUSUAL FILE MOVEMENTS 
+
+DeviceFileEvents
+| where Timestamp > ago(90d)
+| where ActionType in ('FileCreated', 'FileModified')
+| where FileName matches regex @"(?i)\.(zip|7z|rar|tar|gz|tgz|bz2|iso)$"
+| where FileSize > 10000000 
+| where not(FolderPath contains "Program Files")
+| where not(FolderPath contains "Windows\\System32")
+| where not(FolderPath contains "AppData\\Local\\Temp")
+| project 
+    Timestamp, 
+    DeviceName, 
+    InitiatingProcessAccountName, 
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine, // Added for context on what process ran the compression
+    FileName, 
+    FileSize, // Kept FileSize to confirm the large size
+    FolderPath, 
+    SHA256
+| order by Timestamp desc
+
+
+Modified Query :
+
+DeviceFileEvents
+| where Timestamp > ago(90d)
+| where ActionType in ('FileCreated', 'FileModified')
+| where FileName matches regex @"(?i)\.(zip|7z|rar|tar|gz|tgz|bz2|iso)$"
+| where FileSize > 50000000 // Raised from 10MB to 50MB (50,000,000 bytes)
+| where not(InitiatingProcessFileName in (
+    'svchost.exe',        // System service activity
+    'msiexec.exe',        // Software installation/updates
+    'wusa.exe',           // Windows Update Standalone Installer
+    'Csc.exe',            // C# Compiler (often used in build processes)
+    'devenv.exe',         // Visual Studio/Development IDEs
+    'MSBuild.exe',        // Build processes
+    'Teams.exe',          // Collaboration app file transfers/downloads
+    'Outlook.exe',        // Email client zipping/attachments
+    'chrome.exe',         // Browser-initiated downloads/saves
+    'firefox.exe'
+))
+| where not(FolderPath contains "Program Files")
+| where not(FolderPath contains "Windows\\System32")
+| where not(FolderPath contains "AppData\\Local\\Temp")
+| where not(FolderPath contains "Users\\Public\\Downloads") // Common download path
+| where not(FolderPath contains "C:\\Windows\\Installer") // Installation archives
+| where not(FolderPath contains "Recycle.Bin") // Items moving to/from trash
+| where FolderPath contains "Users\\"
+| where FolderPath contains "Desktop" or FolderPath contains "Documents" or FolderPath contains "Downloads" or FolderPath contains "Public"
+| where not(InitiatingProcessAccountName contains "NT AUTHORITY")
+| where not(InitiatingProcessAccountName contains "LOCAL SERVICE")
+| project 
+    Timestamp, 
+    DeviceName, 
+    InitiatingProcessAccountName, 
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    FileName, 
+    FileSize,
+    FolderPath, 
+    SHA256
+| order by Timestamp desc
+
