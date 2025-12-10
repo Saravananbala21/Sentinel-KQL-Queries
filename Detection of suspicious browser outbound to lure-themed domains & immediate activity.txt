@@ -1,0 +1,20 @@
+// Focus: suspicious browser outbound to lure-themed domains + immediate activity
+let suspiciousKeywords = dynamic(["fix", "verify", "captcha", "activation", "crack", "patch", "update-required", "error-fix"]);
+let timeframe = 90d;
+DeviceNetworkEvents
+| where Timestamp > ago(timeframe)
+| where InitiatingProcessFileName in~ ("msedge.exe", "chrome.exe", "firefox.exe", "opera.exe")
+| where RemoteUrl has_any (suspiciousKeywords)
+// Filter common benign CDNs and corporate domains
+| where not(RemoteUrl matches regex @"(microsoft|windowsupdate|office|google|youtube|bing|cloudfront)")
+| extend Domain = tostring(parse_url(RemoteUrl).Host)
+| join kind=leftouter (
+    DeviceProcessEvents
+    | where Timestamp > ago(timeframe)
+    | where InitiatingProcessFileName in~ ("msedge.exe", "chrome.exe", "firefox.exe", "opera.exe")
+    | where FileName in~ ("powershell.exe","pwsh.exe","cmd.exe","wscript.exe","curl.exe","wget.exe")
+    | project DeviceId, ProcessTime = Timestamp, SuspiciousProcess = FileName, ProcessCommandLine
+) on DeviceId
+| project Timestamp, DeviceName, AccountName, RemoteUrl, Domain,
+          SuspiciousProcess, ProcessCommandLine
+| order by Timestamp desc

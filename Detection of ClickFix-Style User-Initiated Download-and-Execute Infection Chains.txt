@@ -1,0 +1,39 @@
+// ClickFix-style self-infection via weaponized videos / fake verification pages
+// Focus: suspicious PowerShell/CLI spawned after interactive user action (Run dialog / Explorer / browser)
+DeviceProcessEvents
+| where Timestamp > ago(90d)
+// Target suspicious interpreters used in ClickFix chains
+| where FileName in~ ("powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe")
+   or (FileName =~ "curl.exe" or FileName =~ "wget.exe")
+// Likely parent from Run dialog / user interaction
+| where InitiatingProcessFileName in~ ("explorer.exe", "msedge.exe", "chrome.exe", "firefox.exe", "opera.exe")
+// Focus on commands that download + execute content
+| where ProcessCommandLine has_any (
+        "Invoke-WebRequest",
+        "iwr ",
+        "curl ",
+        "wget ",
+        "DownloadString",
+        "Start-BitsTransfer",
+        "bitsadmin",
+        "System.Net.WebClient",
+        "Invoke-Expression",
+        "iex "
+    )
+// Filter obvious benign admin tools if needed (example: internal management servers)
+| where not(AccountName has_any ("svc_", "$"))
+// Optional: look for base64 / obfuscated patterns often seen in ClickFix payloads
+| extend hasEncoded = ProcessCommandLine has_all ("-EncodedCommand", "powershell")
+| extend url = extract(@"(https?://[^\s'\""]+)", 1, ProcessCommandLine)
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    hasEncoded,
+    url,
+    ReportId
+| order by Timestamp desc

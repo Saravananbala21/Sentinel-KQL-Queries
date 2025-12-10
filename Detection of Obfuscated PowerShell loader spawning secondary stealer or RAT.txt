@@ -1,0 +1,62 @@
+// Obfuscated PowerShell loader spawning secondary stealer/RAT
+let timeframe = 30d;
+// 1. Find suspicious PowerShell loaders (obfuscated / encoded)
+let SuspiciousPS =
+DeviceProcessEvents
+| where Timestamp > ago(timeframe)
+| where FileName in~ ("powershell.exe","pwsh.exe")
+| where ProcessCommandLine has_any (
+        "-EncodedCommand",
+        "[Convert]::FromBase64String",
+        "Invoke-Expression",
+        "iex "
+    )
+// user / interactive origins are more likely ClickFix-related
+| where InitiatingProcessFileName in~ ("explorer.exe","cmd.exe","msedge.exe","chrome.exe","firefox.exe","opera.exe")
+| project
+    DeviceId,
+    DeviceName,
+    AccountName,
+    PSProcessId = ProcessId,
+    PSStartTime = Timestamp,
+    PSCommandLine = ProcessCommandLine,
+    PSParent = InitiatingProcessFileName,
+    PSParentCommandLine = InitiatingProcessCommandLine;
+// 2. Find child processes spawned by those PowerShell loaders
+let PSChildren =
+DeviceProcessEvents
+| where Timestamp > ago(timeframe)
+| project
+    DeviceId,
+    ChildProcessId = ProcessId,
+    ChildParentProcessId = InitiatingProcessId,
+    ChildTime = Timestamp,
+    ChildFileName = FileName,
+    ChildCommandLine = ProcessCommandLine;
+// 3. Join loaders to their children and focus on suspicious child locations
+SuspiciousPS
+| join kind=inner PSChildren on DeviceId
+| where ChildParentProcessId == PSProcessId
+| where ChildTime between (PSStartTime .. PSStartTime + 10m)
+// suspicious child paths (user profile / temp / appdata)
+| extend LowerCmd = tolower(ChildCommandLine)
+| where LowerCmd has_any (
+        "\\appdata\\local\\temp",
+        "\\appdata\\roaming",
+        "\\users\\",
+        "\\temp\\",
+        "\\programdata\\"
+    )
+// Exclude some common benign tools if you see noise (example)
+| where not(LowerCmd has_any ("\\visual studio","\\vcpkg","\\clink"))
+| project
+    DeviceName,
+    AccountName,
+    PSStartTime,
+    PSCommandLine,
+    PSParent,
+    PSParentCommandLine,
+    ChildTime,
+    ChildFileName,
+    ChildCommandLine
+| order by ChildTime desc

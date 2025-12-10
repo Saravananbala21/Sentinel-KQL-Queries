@@ -1,0 +1,94 @@
+// LOLBin-based malicious download + execution (ClickFix post-click behavior)
+let timeframe = 30d;   // tighten window to last 2 days – increase if needed
+DeviceProcessEvents
+| where Timestamp > ago(timeframe)
+// Target LOLBins directly inlined
+| where FileName in~ (
+    "powershell.exe",
+    "pwsh.exe",
+    "curl.exe",
+    "wget.exe",
+    "bitsadmin.exe",
+    "mshta.exe",
+    "rundll32.exe",
+    "certutil.exe"
+)
+// suspicious command-line download / execution patterns
+| where ProcessCommandLine has_any (
+        "http://","https://",
+        "Invoke-WebRequest","iwr",
+        "DownloadString",
+        "curl ","wget ",
+        "Start-BitsTransfer",
+        "bitsadmin",
+        "certutil -urlcache",
+        "-EncodedCommand",
+        "| iex"
+    )
+// ClickFix-style parents (user-initiated from explorer or browser)
+| where InitiatingProcessFileName in~ (
+        "explorer.exe",
+        "msedge.exe",
+        "chrome.exe",
+        "firefox.exe",
+        "opera.exe"
+    )
+// Drop obvious benign/dev/admin noise you've seen in your hunts
+| where not(ProcessCommandLine has_any (
+        "Visual Studio",
+        "vcpkg-init.cmd",
+        "vcpkg\\vcpkg-init.cmd",
+        "Get-AzAccessToken",
+        "Az.Accounts",
+        "clink/releases/latest",
+        "AzureRM",
+        "NuGet.exe"
+    ))
+// Filter out service / machine / admin-style accounts (tune to your env)
+| where not(AccountName has_any (
+        "svc_",
+        "$",
+        "adm.",
+        "admin",
+        "system"
+    ))
+// Add extra heuristics to increase confidence
+| extend HasEncoded   = ProcessCommandLine has "-EncodedCommand"
+| extend HasIEX       = ProcessCommandLine has "iex"
+| extend DownloadsToTemp = ProcessCommandLine has_any (
+        "%TEMP%",
+        "\\AppData\\Local\\Temp",
+        "\\Downloads\\"
+    )
+| where HasEncoded or HasIEX or DownloadsToTemp
+// Optionally join with network events to see where it's calling out
+| join kind=leftouter (
+    DeviceNetworkEvents
+    | where Timestamp > ago(timeframe)
+    | where InitiatingProcessFileName in~ (
+        "powershell.exe",
+        "pwsh.exe",
+        "curl.exe",
+        "wget.exe",
+        "bitsadmin.exe",
+        "mshta.exe",
+        "rundll32.exe",
+        "certutil.exe"
+      )
+    | project DeviceId, NetworkTime = Timestamp, RemoteUrl, RemoteIP
+) on DeviceId
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine,
+    HasEncoded,
+    HasIEX,
+    DownloadsToTemp,
+    RemoteUrl,
+    RemoteIP,
+    NetworkTime
+| order by Timestamp desc

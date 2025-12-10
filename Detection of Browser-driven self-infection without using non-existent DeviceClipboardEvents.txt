@@ -1,0 +1,41 @@
+// Method 3 (fixed) – Browser-driven self-infection without using non-existent DeviceClipboardEvents
+// Idea: browser activity followed by suspicious PowerShell/CMD execution on same device/user
+let timeframe = 90d;
+// 1. Suspicious PowerShell / CMD executions (self-infection style)
+let SuspiciousExec =
+DeviceProcessEvents
+| where Timestamp > ago(timeframe)
+| where FileName in~ ("powershell.exe","pwsh.exe","cmd.exe")
+| where ProcessCommandLine has_any (
+        "Invoke-WebRequest","DownloadString","curl","wget",
+        "iwr ","iex ","Start-BitsTransfer","-EncodedCommand"
+    )
+| where InitiatingProcessFileName in~ ("explorer.exe","cmd.exe") // user/interactive starts
+| project DeviceId, DeviceName, AccountName,
+          ExecTime = Timestamp, FileName, ProcessCommandLine,
+          InitiatingProcessFileName, InitiatingProcessCommandLine;
+// 2. Browser activity shortly BEFORE the suspicious execution
+let BrowserActivity =
+DeviceProcessEvents
+| where Timestamp > ago(timeframe)
+| where FileName in~ ("msedge.exe","chrome.exe","firefox.exe","opera.exe")
+| project DeviceId, BrowserTime = Timestamp, BrowserProcess = FileName, BrowserCommandLine = ProcessCommandLine;
+// 3. Correlate: browser activity within 10 minutes BEFORE suspicious execution on same device
+BrowserActivity
+| join kind=inner (
+    SuspiciousExec
+) on DeviceId
+| where BrowserTime between (ExecTime - 10m .. ExecTime)   // browser just before execution
+| project
+    DeviceName,
+    AccountName,
+    BrowserTime,
+    BrowserProcess,
+    BrowserCommandLine,
+    ExecTime,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine
+| order by ExecTime desc
+
