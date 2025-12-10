@@ -1,0 +1,7 @@
+// DETECTING CLOUD SYNC UTILITY USAGE ON ENDPOINTS 
+DeviceProcessEvents
+| where Timestamp > ago(90d)
+| where ActionType == "ProcessCreated" // Filter on the specific action type for efficiency
+| where FileName in ("rclone.exe", "dropbox.exe", "boxsync.exe", "googledrivesync.exe", "megasync.exe", "winscp.exe", "curl.exe") // Use case-sensitive 'in' for much faster lookup
+| project Timestamp, DeviceName, InitiatingProcessAccountName, FileName, FolderPath, ProcessCommandLine
+| order by Timestamp desc
