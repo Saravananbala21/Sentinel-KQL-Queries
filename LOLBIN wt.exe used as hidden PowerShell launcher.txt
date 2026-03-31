@@ -1,0 +1,28 @@
+
+
+// DETECTION RULE: LOLBIN wt.exe used as hidden PowerShell launcher
+// Rule name: LOLBIN_wt_exe_Hidden_PowerShell_Execution
+// Severity: High | MITRE: T1218 (System Binary Proxy), T1059.001 (PowerShell)
+
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where FileName =~ "wt.exe"
+| where ProcessCommandLine has_any (
+    "hidden","bypass","ep bypass","w hidden",
+    "nop","noprofile","encodedcommand","-enc",
+    ".ps1",".vbs",".hta"
+)
+// Additional signal: wt.exe NOT launched from its legitimate install path
+| where not (FolderPath has_any (
+    "WindowsApps\\Microsoft.WindowsTerminal",
+    "WindowsApps\\Microsoft.WindowsTerminalPreview"
+))
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    CommandLine     = ProcessCommandLine,
+    FolderPath,
+    ParentProcess   = InitiatingProcessFileName,
+    ParentCmdLine   = InitiatingProcessCommandLine
+| sort by Timestamp desc

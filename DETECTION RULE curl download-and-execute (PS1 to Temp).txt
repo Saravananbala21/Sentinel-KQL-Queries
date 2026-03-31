@@ -1,0 +1,36 @@
+// DETECTION RULE: curl download-and-execute (PS1 to Temp)
+// Rule name: Curl_Download_Execute_PS1_From_Temp
+// Severity: Critical | MITRE: T1105 (Ingress Tool Transfer), T1059.001
+
+let CurlDownloads = DeviceFileEvents
+    | where Timestamp > ago(1d)
+    | where InitiatingProcessFileName =~ "curl.exe"
+    | where FileName endswith ".ps1"
+        or FileName endswith ".bat"
+        or FileName endswith ".exe"
+    | where FolderPath has_any (@"\Temp\", @"\AppData\Local\Temp\")
+    | project
+        DownloadTime = Timestamp,
+        DeviceName,
+        DroppedFile  = strcat(FolderPath, "\\", FileName),
+        CurlCmdLine  = InitiatingProcessCommandLine;
+let PS1Executions = DeviceProcessEvents
+    | where Timestamp > ago(1d)
+    | where FileName in~ ("powershell.exe","pwsh.exe","wt.exe")
+    | where ProcessCommandLine has_any (@"\Temp\",@"\AppData\Local\Temp\")
+    | where ProcessCommandLine has_any (".ps1","-file","-ep","bypass")
+    | project
+        ExecTime    = Timestamp,
+        DeviceName,
+        ExecCmdLine = ProcessCommandLine;
+CurlDownloads
+| join kind=inner PS1Executions on DeviceName
+| where ExecTime between (DownloadTime .. (DownloadTime + 30s))
+| project
+    DownloadTime,
+    DeviceName,
+    CurlCmdLine,
+    DroppedFile,
+    ExecCmdLine,
+    TimeDeltaSec = (ExecTime - DownloadTime) / 1s
+| sort by DownloadTime desc
